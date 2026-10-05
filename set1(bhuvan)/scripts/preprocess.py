@@ -16,8 +16,9 @@ Pipeline (per image):
      clamped to working-image bounds, mapped back to full resolution, cropped
      from the FULL-RESOLUTION image (detect-before-resize so pips survive).
   8. Resize crop to NxN (INTER_AREA), grayscale, bilateral filter
-     (d=7, sigmaColor=40, sigmaSpace=7), linear contrast stretch via
-     cv2.normalize MINMAX. No hist-equalization / CLAHE.
+     (d=7, sigmaColor=40, sigmaSpace=7), then background-level
+     normalization: scale so the border-strip median maps to 200.
+     No hist-equalization / CLAHE.
   9. Save lossless single-channel 8-bit PNG + metadata row + contact sheet.
 
 Classical image processing only (OpenCV + NumPy), no deep learning.
@@ -95,9 +96,10 @@ def detect_die(work_bgr):
 def crop_and_normalize(full_bgr, work_bbox, work_shape, scale, size, margin):
     """Map the working-coords bbox to a square full-res crop and normalize it.
 
-    Returns (gray_224, fullres_bbox) where gray_224 is the final single-channel
-    8-bit image and fullres_bbox = (x, y, w, h) of the square crop in
-    full-resolution coordinates.
+    Returns (gray_out, fullres_bbox, bg_before, bg_after) where gray_out is
+    the final single-channel 8-bit image, fullres_bbox = (x, y, w, h) of the
+    square crop in full-resolution coordinates, and bg_before / bg_after are
+    the border-strip median gray levels before / after normalization.
     """
     x, y, w, h = work_bbox
     work_h, work_w = work_shape[:2]
@@ -118,12 +120,24 @@ def crop_and_normalize(full_bgr, work_bbox, work_shape, scale, size, margin):
     fullres_bbox = (fx1, fy1, fx2 - fx1, fy2 - fy1)
     crop = full_bgr[fy1:fy2, fx1:fx2]
     # 8. Resize first (INTER_AREA is best for downsampling), then gray,
-    #    edge-preserving smoothing, linear contrast stretch.
+    #    edge-preserving smoothing, then background-level normalization:
+    #    scale intensities so the border strip (outer 12% on all sides,
+    #    i.e. background only) has median 200 in every output image.
     resized = cv2.resize(crop, (size, size), interpolation=cv2.INTER_AREA)
     gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
     smooth = cv2.bilateralFilter(gray, d=7, sigmaColor=40, sigmaSpace=7)
-    out = cv2.normalize(smooth, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    return out, fullres_bbox
+    b = int(round(0.12 * size))  # ~27 px at size 224
+    border = np.zeros_like(smooth, dtype=bool)
+    border[:b, :] = True
+    border[-b:, :] = True
+    border[:, :b] = True
+    border[:, -b:] = True
+    bg_before = float(np.median(smooth[border]))
+    out = np.clip(smooth.astype(np.float32) * (200.0 / bg_before), 0, 255).astype(
+        np.uint8
+    )
+    bg_after = float(np.median(out[border]))
+    return out, fullres_bbox, round(bg_before, 2), round(bg_after, 2)
 
 
 def process_image(path, output_dir, size, margin, debug_dir=None):
@@ -146,6 +160,8 @@ def process_image(path, output_dir, size, margin, debug_dir=None):
         "bbox_h": "",
         "mask_area_fraction": "",
         "qc_flag": "",
+        "bg_level_before": "",
+        "bg_level_after": "",
     }
     # 1. Full-resolution load (cv2 applies EXIF orientation).
     full = cv2.imread(str(path))
@@ -172,10 +188,12 @@ def process_image(path, output_dir, size, margin, debug_dir=None):
     mask_area_fraction = mask_area / float(work_w * work_h)
     row["mask_area_fraction"] = round(mask_area_fraction, 6)
 
-    final, fullres_bbox = crop_and_normalize(
+    final, fullres_bbox, bg_before, bg_after = crop_and_normalize(
         full, (x, y, w, h), work.shape, scale, size, margin
     )
     row["bbox_x"], row["bbox_y"], row["bbox_w"], row["bbox_h"] = fullres_bbox
+    row["bg_level_before"] = bg_before
+    row["bg_level_after"] = bg_after
 
     # QC checks (accumulate flags, don't crash).
     flags = []
@@ -279,6 +297,8 @@ COLUMNS = [
     "bbox_h",
     "mask_area_fraction",
     "qc_flag",
+    "bg_level_before",
+    "bg_level_after",
 ]
 
 
