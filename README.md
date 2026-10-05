@@ -175,6 +175,8 @@ overlay, final crop per image to `scripts/debug/`).
   edge (fully inside the crop), and face-1 shots show a bright specular ring
   around the single pip.
 
+---
+
 ## Set 2
 
 All work described here uses `set2(jai)`. It follows the same pipeline and the
@@ -278,3 +280,11 @@ current directory).
 - Note: on white dice many pixels sit at 255 after normalization (7 images
   have more than 10% saturated pixels). The pips are dark and clearly visible
   in those.
+
+---
+
+## Final Count
+
+- Set 1 -> capture using phone camera -> 60 images (10 per face)
+- Set 2 -> generated using a script -> 120 images (20 per face)
+- Total -> 180 images
