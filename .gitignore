@@ -30,3 +30,7 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Mini Project 2 outputs
+die_dataset_cache/
+results/
