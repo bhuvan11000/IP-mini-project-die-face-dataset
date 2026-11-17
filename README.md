@@ -2,10 +2,16 @@
 
 Mini Project 1 for an image processing course. Images of a single six-sided
 die, one face up per image (set 1: phone photos, set 2: synthetic renders).
-The preprocessing pipeline below turns the raw
-photos into clean, uniform, grayscale crops of the die, ready for a possible
-later stage that counts pips and classifies faces 1-6. No classifier is built
-here, preprocessing only, using classical image processing (OpenCV + NumPy).
+The preprocessing pipeline below turns the raw photos into clean, uniform,
+grayscale crops of the die, ready for a later stage that counts pips and
+classifies faces 1-6. Mini Project 1 is preprocessing only, using classical
+image processing (OpenCV + NumPy).
+
+The repository also contains the **Mini Project 2 classifier**,
+`PES1UG24CS568_PES1UG24CS197_PES1UG24CS226.py`, which uses these processed
+images for classical (Harris / SIFT + SVM) and deep (ResNet / MViT) face
+classification. See [Mini Project 2](#mini-project-2---die-face-classification)
+below.
 
 ## Set 1
 
@@ -32,6 +38,7 @@ IP-mini-project-die-face-dataset/
 |-- README.md
 |-- LICENSE
 |-- capture.sh                  # phone capture script used for set 1 acquisition
+|-- PES1UG24CS568_PES1UG24CS197_PES1UG24CS226.py  # Mini Project 2 classifier
 |-- set1(bhuvan)/
 |   |-- unprocessed/            # 60 original photos (INPUT, read-only)
 |   |-- processed/              # OUTPUT: 60 PNGs + _contact_sheet.png
@@ -286,5 +293,179 @@ current directory).
 ## Final Count
 
 - Set 1 -> capture using phone camera -> 60 images (10 per face)
-- Set 2 -> generated using a script -> 120 images (20 per face)
-- Total -> 180 images
+- Set 2 -> generated using a script -> 119 images
+  (face 1-6: 20, 19, 20, 20, 21, 19)
+- Total -> 179 images
+
+---
+
+## Mini Project 2 - Die Face Classification
+
+Mini Project 2 uses the 179 processed crops from Mini Project 1 (60 real phone
+photos + 119 synthetic renders, each 224x224 grayscale) to classify the visible
+face value 1-6. Team SRs: `PES1UG24CS568`, `PES1UG24CS197`,
+`PES1UG24CS226`. The complete submission is a single Python file:
+
+```
+PES1UG24CS568_PES1UG24CS197_PES1UG24CS226.py
+```
+
+The script does not assume the dataset is already present. It downloads the
+two `processed` folders and their `metadata.csv` files from
+`https://github.com/bhuvan11000/IP-mini-project-die-face-dataset`, caches them
+in `die_dataset_cache/`, and reads the labels from the metadata. It runs from
+any directory.
+
+### What the script implements
+
+| Course requirement | Implementation |
+|---|---|
+| SIFT + Harris feature extraction with SVM classification | Harris layout (52-D) + SVM, rotation-invariant Harris (33-D) + SVM, SIFT + BoVW + SVM, and Harris–SIFT hybrid + SVM |
+| ResNet image classification | `torchvision` ResNet-18, ImageNet-pretrained and fine-tuned |
+| MViT image classification | `timm` MViTv2-Tiny (Multiscale Vision Transformer), ImageNet-pretrained and fine-tuned |
+| Single `.py` submission | `PES1UG24CS568_PES1UG24CS197_PES1UG24CS226.py` |
+| SR-based filename | three SRs separated by underscores |
+
+**Part 1 - classical features + SVM**
+
+- Harris corner feature vector: corner response statistics, the 20 strongest
+  corner coordinates, and an intensity histogram at corner pixels (52-D).
+- Rotation-invariant Harris descriptor: pip-like corner clusters and pairwise
+  distance histograms, using distances rather than absolute positions (33-D).
+- SIFT descriptors clustered into 200 visual words with K-Means; each image is
+  encoded as an L2/power-normalised bag-of-visual-words histogram.
+- RBF SVM with `StandardScaler`; hyperparameters can be tuned by 5-fold CV.
+- A cosine-similarity 1-NN baseline on the SIFT BoVW vectors.
+- Harris keypoints + SIFT descriptors + BoVW as a hybrid pipeline.
+- Cross-source evaluation: train on one entire source and test on the other.
+- 5-fold cross-validation with the visual vocabulary re-fitted inside each
+  fold, so test descriptors never leak into the codebook.
+
+**Part 2 - deep learning**
+
+- ResNet-18 fine-tuned from ImageNet weights.
+- MViTv2-Tiny fine-tuned from ImageNet weights.
+- `--freeze_backbone` trains only the final classification layer (linear
+  probe) instead of fine-tuning the whole network.
+- The same source-stratified train/validation/test split is used as in Part 1.
+  The validation split selects the best epoch; the test split is never used
+  for training, vocabulary fitting, or model selection.
+
+### Split
+
+The split is stratified on `(source, face)`:
+
+| Split | Images | Use |
+|---|---:|---|
+| Train | 113 | classical fits; deep training |
+| Validation | 21 | deep epoch selection |
+| Test | 45 | final evaluation for every model |
+
+Both sources and all six faces are represented in every split. The classical
+models train on train + validation, while the deep models use validation for
+best-epoch selection.
+
+### Results
+
+The numbers below are from the verification runs used for this project. The
+script defaults to 30 deep-learning epochs; the deep numbers below are from
+10-epoch verification runs, so they are indicative rather than a tuned
+benchmark.
+
+**Part 1 - classical holdout** (fixed RBF SVM, `C=10`, `gamma="scale"`):
+
+| Method | Holdout accuracy | 5-fold CV |
+|---|---:|---:|
+| Harris layout (52-D) + SVM | 46.7% | 48.1% ± 6.6% |
+| Harris rotation-invariant (33-D) + SVM | 84.4% | 84.4% ± 4.5% |
+| SIFT + BoVW + SVM | 91.1% | 88.8% ± 3.2% |
+| SIFT + BoVW + cosine 1-NN | 80.0% | — |
+| Harris–SIFT hybrid + BoVW + SVM | 64.4% | 68.7% ± 9.4% |
+
+With 5-fold SVM hyperparameter search, the holdout accuracy was 88.9% for
+SIFT and 82.2% for the rotation-invariant Harris descriptor; the ranking is
+unchanged.
+
+**Cross-source generalisation (SIFT + BoVW)**:
+
+| Train source | Test source | Accuracy |
+|---|---|---:|
+| Synthetic `set2` | Real `set1` | 25.0% |
+| Real `set1` | Synthetic `set2` | 25.2% |
+| Chance level | — | 16.7% |
+
+**Part 2 - deep learning** (10-epoch verification runs, ImageNet pretrained):
+
+| Model | Pooled holdout | Cross-source |
+|---|---:|---:|
+| ResNet-18 | 100.0% (seed 42); 95.6% (seed 123) | 31.7% `set2 -> set1`; 21.9% `set1 -> set2` |
+| MViTv2-Tiny | 100.0% (seed 42) | — |
+
+> **Important:** the pooled random split is optimistic. Both sources appear in
+> train and test, the processed crops are clean and centred, and the test set
+> has only 45 images. The 100% result is not the headline generalisation
+> number. Use the cross-source / leave-one-source-out results as the
+> generalisation estimate, and use `--seed` to check split stability. The
+> script prints a caution note whenever a model gets a perfect score on a
+> small pooled test set.
+
+### Usage
+
+Install the classical dependencies (already present in many Colab/Kaggle
+environments):
+
+```bash
+pip install numpy pandas opencv-python scikit-learn matplotlib
+```
+
+Install the deep-learning dependencies for Part 2:
+
+```bash
+pip install torch torchvision timm
+```
+
+Run everything (downloads the dataset from GitHub on the first run):
+
+```bash
+python PES1UG24CS568_PES1UG24CS197_PES1UG24CS226.py
+```
+
+Common options:
+
+```bash
+# classical part only (no torch/timm needed)
+python PES1UG24CS568_PES1UG24CS197_PES1UG24CS226.py --skip_dl
+
+# deep learning only
+python PES1UG24CS568_PES1UG24CS197_PES1UG24CS226.py --skip_classical
+
+# choose deep models / epochs
+python PES1UG24CS568_PES1UG24CS197_PES1UG24CS226.py --models resnet --epochs 10
+python PES1UG24CS568_PES1UG24CS197_PES1UG24CS226.py --models both --epochs 30
+
+# train only the final layer (linear probe)
+python PES1UG24CS568_PES1UG24CS197_PES1UG24CS226.py --freeze_backbone
+
+# different split / stability check
+python PES1UG24CS568_PES1UG24CS197_PES1UG24CS226.py --seed 123
+
+# offline: use an existing clone
+python PES1UG24CS568_PES1UG24CS197_PES1UG24CS226.py --data_root .
+```
+
+The first run downloads a repository archive (about 62 MB) and extracts only
+the processed images and metadata (about 6 MB stored). Later runs reuse
+`die_dataset_cache/`. `--download_mode api` fetches only the needed files
+individually if you prefer lower bandwidth over speed.
+
+### Outputs
+
+- `results/cm_*.png` - confusion matrices for every model.
+- `results/curves_*.png` - ResNet / MViT training curves.
+- `results/harris_response.png` - Harris response and detected corners.
+- `results/harris_sift_keypoints.png` - Harris vs SIFT keypoints.
+- `results/results.json` - split, configuration, holdout results,
+  cross-source results and 5-fold CV summary.
+
+`results/` and `die_dataset_cache/` are generated locally and are ignored by
+git.
